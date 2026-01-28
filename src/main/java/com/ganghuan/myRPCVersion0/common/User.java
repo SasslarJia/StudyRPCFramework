@@ -16,4 +16,13 @@ public class User implements Serializable {
     private Integer id;
     private String userName;
     private Boolean sex;
+
+    @Override
+    public String toString() {
+        return "User{" +
+                "id=" + id +
+                ", userName='" + userName + '\'' +
+                ", sex=" + sex +
+                '}';
+    }
 }

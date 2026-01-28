@@ -13,14 +13,14 @@ public class RPCClient {
         try {
             // 建立Socket连接
             Socket socket = new Socket("127.0.0.1", 8899);
-            ObjectOutputStream objectOutputStream = new ObjectOutputStream(socket.getOutputStream());
-            ObjectInputStream objectInputStream = new ObjectInputStream(socket.getInputStream());
+            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
             // 传给服务器id
-            objectOutputStream.writeInt(new Random().nextInt());
-            objectOutputStream.flush();
+            oos.writeInt(new Random().nextInt());
+            oos.flush();
             // 服务器查询数据，返回对应的对象
-            User user  = (User) objectInputStream.readObject();
-            System.out.println("服务端返回的User:"+user);
+            User user  = (User) ois.readObject();
+            System.out.println("服务端返回的User:"+user.toString());
 
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();

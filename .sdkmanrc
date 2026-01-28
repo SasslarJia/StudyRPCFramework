@@ -1,0 +1,9 @@
+# Enable auto-env through the sdkman_auto_env config
+# Add key=value pairs of SDKs to use below
+
+# java
+#java=8.0.452.fx-zulu  # openjdk默认没有javax.fx,需要选择fx后缀jdk
+java=11.0.29-amzn
+
+# maven
+maven=3.9.5
