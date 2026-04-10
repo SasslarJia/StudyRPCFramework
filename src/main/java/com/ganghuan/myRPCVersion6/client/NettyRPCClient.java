@@ -2,17 +2,22 @@ package com.ganghuan.myRPCVersion6.client;
 
 import com.ganghuan.myRPCVersion6.common.RPCRequest;
 import com.ganghuan.myRPCVersion6.common.RPCResponse;
+import com.ganghuan.myRPCVersion6.loadbalance.LoadBalance;
+import com.ganghuan.myRPCVersion6.loadbalance.LoadBalanceFactory;
 import com.ganghuan.myRPCVersion6.register.ServiceRegister;
 import com.ganghuan.myRPCVersion6.register.ZkServiceRegister;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.util.HashedWheelTimer;
-import io.netty.util.Timer;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -24,16 +29,24 @@ import java.util.UUID;
  * 基于 requestId + CompletableFuture 实现异步多路复用，单条长连接支持并发请求
  */
 public class NettyRPCClient implements RPCClient {
+    private static final int REQUEST_TIMEOUT_SECONDS = 3;
+    private static final int MAX_RETRY_TIMES = 2;
+    private static final int FAILURE_THRESHOLD = 3;
+    private static final int HALF_OPEN_SUCCESS_THRESHOLD = 2;
+    private static final long CIRCUIT_OPEN_MILLIS = 30_000L;
+
     private static final Bootstrap bootstrap;
     private static final EventLoopGroup eventLoopGroup;
     // 每个服务地址对应一个 Channel（长连接复用）
     private static final ConcurrentHashMap<String, Channel> channelMap = new ConcurrentHashMap<>();
-    private static final Timer timer = new HashedWheelTimer();
+    private static final ConcurrentHashMap<String, InstanceFaultState> faultStateMap = new ConcurrentHashMap<>();
 
-    private ServiceRegister serviceRegister;
+    private final ServiceRegister serviceRegister;
+    private final LoadBalance loadBalance;
 
     public NettyRPCClient() {
         this.serviceRegister = new ZkServiceRegister();
+        this.loadBalance = LoadBalanceFactory.getLoadBalance(System.getProperty("myrpc.loadbalance", "round"));
     }
 
     // netty客户端初始化，重复使用
@@ -46,51 +59,88 @@ public class NettyRPCClient implements RPCClient {
 
     @Override
     public RPCResponse sendRequest(RPCRequest request) {
-        InetSocketAddress address = serviceRegister.serviceDiscovery(request.getInterfaceName());
-        String key = address.getHostName() + ":" + address.getPort();
+        List<InetSocketAddress> addressList = serviceRegister.getServiceAddresses(request.getInterfaceName());
+        if (addressList.isEmpty()) {
+            throw new RuntimeException("没有可用服务实例: " + request.getInterfaceName());
+        }
 
-        // 获取或建立长连接
-        Channel channel = channelMap.compute(key, (k, existing) -> {
-            if (existing != null && existing.isActive()) {
-                return existing;
+        int maxAttempts = request.isRetryable() ? Math.min(addressList.size(), MAX_RETRY_TIMES + 1) : 1;
+        Set<String> triedInstances = new HashSet<>();
+        RuntimeException lastException = null;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            InetSocketAddress address = selectAddress(addressList, request, triedInstances);
+            if (address == null) {
+                break;
             }
+            String key = buildAddressKey(address);
+            triedInstances.add(key);
             try {
-                return bootstrap.connect(address.getHostName(), address.getPort()).sync().channel();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("连接服务端失败: " + k, e);
+                RPCResponse response = invokeOnce(request, address, key);
+                onInstanceSuccess(key);
+                return response;
+            } catch (RetryableRpcException e) {
+                onInstanceFailure(key);
+                lastException = e;
+                if (!request.isRetryable() || attempt == maxAttempts) {
+                    break;
+                }
+                System.out.println("实例调用失败，准备重试其它实例: " + key + "，原因: " + e.getMessage());
+            } catch (NonRetryableRpcException e) {
+                onInstanceFailure(key);
+                throw e;
             }
-        });
+        }
 
-        // 生成 requestId，注册 CompletableFuture
+        throw new RuntimeException("RPC调用失败: " + request.getInterfaceName(), lastException);
+    }
+
+    @Override
+    public CompletableFuture<RPCResponse> sendRequestAsync(RPCRequest request) {
+        return CompletableFuture.supplyAsync(() -> sendRequest(copyRequest(request)));
+    }
+
+    private RPCResponse invokeOnce(RPCRequest request, InetSocketAddress address, String key) {
+        Channel channel = getOrCreateChannel(address, key);
         String requestId = UUID.randomUUID().toString();
         request.setRequestId(requestId);
         CompletableFuture<RPCResponse> future = new CompletableFuture<>();
         PendingRequests.put(requestId, future);
 
-        channel.writeAndFlush(request);
+        ChannelFuture writeFuture = channel.writeAndFlush(request);
+        writeFuture.awaitUninterruptibly();
+        if (!writeFuture.isSuccess()) {
+            PendingRequests.remove(requestId);
+            removeChannel(key, channel);
+            throw new RetryableRpcException("发送请求失败: " + key, writeFuture.cause());
+        }
 
         try {
-            return future.get(3, TimeUnit.SECONDS);
+            RPCResponse response = future.get(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (response.getCode() != 200) {
+                throw new NonRetryableRpcException("服务端返回失败: " + response.getMessage());
+            }
+            return response;
         } catch (TimeoutException e) {
             PendingRequests.remove(requestId);
-            throw new RuntimeException("RPC调用超时: " + requestId, e);
+            removeChannel(key, channel);
+            throw new RetryableRpcException("RPC调用超时: " + requestId, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             PendingRequests.remove(requestId);
-            throw new RuntimeException("RPC调用被中断: " + requestId, e);
+            throw new NonRetryableRpcException("RPC调用被中断: " + requestId, e);
+        } catch (NonRetryableRpcException e) {
+            PendingRequests.remove(requestId);
+            throw e;
         } catch (Exception e) {
             PendingRequests.remove(requestId);
-            throw new RuntimeException("RPC调用失败: " + requestId, e);
+            removeChannel(key, channel);
+            throw new RetryableRpcException("RPC调用失败: " + requestId, e);
         }
     }
-    @Override
-    public CompletableFuture<RPCResponse> sendRequestAsync(RPCRequest request) {
-        InetSocketAddress address = serviceRegister.serviceDiscovery(request.getInterfaceName());
-        String key = address.getHostName() + ":" + address.getPort();
 
-        // 获取或建立长连接
-        Channel channel = channelMap.compute(key, (k, existing) -> {
+    private Channel getOrCreateChannel(InetSocketAddress address, String key) {
+        return channelMap.compute(key, (k, existing) -> {
             if (existing != null && existing.isActive()) {
                 return existing;
             }
@@ -98,26 +148,144 @@ public class NettyRPCClient implements RPCClient {
                 return bootstrap.connect(address.getHostName(), address.getPort()).sync().channel();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new RuntimeException("连接服务端失败: " + k, e);
+                throw new RetryableRpcException("连接服务端失败: " + k, e);
             }
         });
+    }
 
-        // 生成 requestId，注册 CompletableFuture
-        String requestId = UUID.randomUUID().toString();
-        request.setRequestId(requestId);
-        CompletableFuture<RPCResponse> future = new CompletableFuture<>();
-        PendingRequests.put(requestId, future);
-
-        channel.writeAndFlush(request);
-
-        // 使用 HashedWheelTimer 进行异步超时控制
-        timer.newTimeout(timeout -> {
-            if (!future.isDone()) {
-                PendingRequests.remove(requestId);
-                future.completeExceptionally(new TimeoutException("RPC调用超时: " + requestId));
+    private InetSocketAddress selectAddress(List<InetSocketAddress> addressList, RPCRequest request, Set<String> triedInstances) {
+        List<InetSocketAddress> availableAddresses = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        for (InetSocketAddress address : addressList) {
+            String key = buildAddressKey(address);
+            if (triedInstances.contains(key)) {
+                continue;
             }
-        }, 3, TimeUnit.SECONDS);
+            InstanceFaultState state = faultStateMap.computeIfAbsent(key, ignored -> new InstanceFaultState());
+            if (state.allowRequest(now)) {
+                availableAddresses.add(address);
+            }
+        }
+        if (availableAddresses.isEmpty()) {
+            return null;
+        }
+        return loadBalance.select(availableAddresses, request);
+    }
 
-        return future;
+    private void onInstanceSuccess(String key) {
+        faultStateMap.computeIfAbsent(key, ignored -> new InstanceFaultState()).onSuccess();
+    }
+
+    private void onInstanceFailure(String key) {
+        faultStateMap.computeIfAbsent(key, ignored -> new InstanceFaultState()).onFailure();
+    }
+
+    private void removeChannel(String key, Channel channel) {
+        channelMap.remove(key, channel);
+        if (channel != null) {
+            channel.close();
+        }
+    }
+
+    private String buildAddressKey(InetSocketAddress address) {
+        return address.getHostName() + ":" + address.getPort();
+    }
+
+    private RPCRequest copyRequest(RPCRequest request) {
+        return RPCRequest.builder()
+                .requestId(request.getRequestId())
+                .retryable(request.isRetryable())
+                .interfaceName(request.getInterfaceName())
+                .methodName(request.getMethodName())
+                .params(request.getParams())
+                .paramsTypes(request.getParamsTypes())
+                .build();
+    }
+
+    private enum CircuitState {
+        CLOSED,
+        OPEN,
+        HALF_OPEN
+    }
+
+    /**
+     * 实例级本地故障状态：
+     * 失败达到阈值后临时摘除，冷却期后放少量探测请求进入半开状态。
+     */
+    private static class InstanceFaultState {
+        private CircuitState circuitState = CircuitState.CLOSED;
+        private int consecutiveFailures;
+        private int halfOpenSuccessCount;
+        private boolean halfOpenProbeInFlight;
+        private long isolatedUntil;
+
+        synchronized boolean allowRequest(long now) {
+            if (circuitState == CircuitState.CLOSED) {
+                return true;
+            }
+            if (circuitState == CircuitState.OPEN) {
+                if (now < isolatedUntil) {
+                    return false;
+                }
+                circuitState = CircuitState.HALF_OPEN;
+                halfOpenProbeInFlight = true;
+                halfOpenSuccessCount = 0;
+                return true;
+            }
+            if (!halfOpenProbeInFlight) {
+                halfOpenProbeInFlight = true;
+                return true;
+            }
+            return false;
+        }
+
+        synchronized void onSuccess() {
+            consecutiveFailures = 0;
+            if (circuitState == CircuitState.HALF_OPEN) {
+                halfOpenProbeInFlight = false;
+                halfOpenSuccessCount++;
+                if (halfOpenSuccessCount >= HALF_OPEN_SUCCESS_THRESHOLD) {
+                    circuitState = CircuitState.CLOSED;
+                    halfOpenSuccessCount = 0;
+                    isolatedUntil = 0L;
+                }
+                return;
+            }
+            circuitState = CircuitState.CLOSED;
+            isolatedUntil = 0L;
+        }
+
+        synchronized void onFailure() {
+            consecutiveFailures++;
+            if (circuitState == CircuitState.HALF_OPEN || consecutiveFailures >= FAILURE_THRESHOLD) {
+                openCircuit();
+                return;
+            }
+            halfOpenProbeInFlight = false;
+        }
+
+        private void openCircuit() {
+            circuitState = CircuitState.OPEN;
+            isolatedUntil = System.currentTimeMillis() + CIRCUIT_OPEN_MILLIS;
+            consecutiveFailures = 0;
+            halfOpenSuccessCount = 0;
+            halfOpenProbeInFlight = false;
+        }
+    }
+
+    private static class RetryableRpcException extends RuntimeException {
+        RetryableRpcException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    private static class NonRetryableRpcException extends RuntimeException {
+        NonRetryableRpcException(String message) {
+            super(message);
+        }
+
+        NonRetryableRpcException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 }

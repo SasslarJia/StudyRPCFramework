@@ -1,7 +1,5 @@
 package com.ganghuan.myRPCVersion6.register;
 
-import com.ganghuan.myRPCVersion6.loadbalance.LoadBalance;
-import com.ganghuan.myRPCVersion6.loadbalance.RandomLoadBalance;
 import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
@@ -10,6 +8,7 @@ import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.zookeeper.CreateMode;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -20,8 +19,6 @@ public class ZkServiceRegister implements ServiceRegister {
     private final CuratorFramework client;
     // zookeeper根路径节点
     private static final String ROOT_PATH = "MyRPC";
-    // 初始化负载均衡器， 这里用的是随机， 一般通过构造函数传入
-    private final LoadBalance loadBalance = new RandomLoadBalance();
     // 客户端本地缓存
     private final ServiceCache serviceCache = new ServiceCache();
     // 每个服务仅注册一次监听器
@@ -59,6 +56,15 @@ public class ZkServiceRegister implements ServiceRegister {
     // 根据服务名返回地址,服务发现
     @Override
     public InetSocketAddress serviceDiscovery(String serviceName) {
+        List<InetSocketAddress> addressList = getServiceAddresses(serviceName);
+        if (addressList.isEmpty()) {
+            throw new RuntimeException("服务发现失败，未找到可用服务: " + serviceName);
+        }
+        return addressList.get(0);
+    }
+
+    @Override
+    public List<InetSocketAddress> getServiceAddresses(String serviceName) {
         List<String> addressList = serviceCache.getServiceAddresses(serviceName);
         if (addressList.isEmpty()) {
             addressList = refreshServiceAddresses(serviceName, false);
@@ -68,11 +74,11 @@ public class ZkServiceRegister implements ServiceRegister {
         } else if (!watchMap.containsKey(serviceName)) {
             registerWatcher(serviceName);
         }
-        if (addressList.isEmpty()) {
-            throw new RuntimeException("服务发现失败，未找到可用服务: " + serviceName);
+        List<InetSocketAddress> result = new ArrayList<>(addressList.size());
+        for (String address : addressList) {
+            result.add(parseAddress(address));
         }
-        String address = loadBalance.balance(addressList);
-        return parseAddress(address);
+        return result;
     }
 
     /**

@@ -6,6 +6,8 @@ import java.util.concurrent.CompletableFuture;
 
 import com.ganghuan.myRPCVersion6.common.RPCRequest;
 import com.ganghuan.myRPCVersion6.common.RPCResponse;
+import com.ganghuan.myRPCVersion6.loadbalance.LoadBalance;
+import com.ganghuan.myRPCVersion6.loadbalance.LoadBalanceFactory;
 import com.ganghuan.myRPCVersion6.register.ServiceRegister;
 import com.ganghuan.myRPCVersion6.register.ZkServiceRegister;
 
@@ -14,21 +16,27 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.List;
 
 public class SimpleRPCClient implements RPCClient {
     private String host;
     private int port;
-    private ServiceRegister serviceRegister;
+    private final ServiceRegister serviceRegister;
+    private final LoadBalance loadBalance;
     public SimpleRPCClient() {
         // 初始化注册中心，建立连接
         this.serviceRegister = new ZkServiceRegister();
+        this.loadBalance = LoadBalanceFactory.getLoadBalance(System.getProperty("myrpc.loadbalance", "round"));
     }
 
     // 客户端发起一次请求调用，Socket建立连接，发起请求Request，得到响应Response
     // 这里的request是封装好的，不同的service需要进行不同的封装， 客户端只知道Service接口，需要一层动态代理根据反射封装不同的Service
     public RPCResponse sendRequest(RPCRequest request) {
-        // 从注册中心获取host，port
-        InetSocketAddress address = serviceRegister.serviceDiscovery(request.getInterfaceName());
+        List<InetSocketAddress> addressList = serviceRegister.getServiceAddresses(request.getInterfaceName());
+        if (addressList.isEmpty()) {
+            throw new RuntimeException("没有可用服务实例: " + request.getInterfaceName());
+        }
+        InetSocketAddress address = loadBalance.select(addressList, request);
         host = address.getHostName();
         port = address.getPort();
         try {

@@ -20,6 +20,8 @@ import java.io.Serializable;
 public class RPCRequest implements Serializable {
     // 请求唯一标识，用于多路复用时匹配响应
     private String requestId;
+    // 是否允许客户端进行幂等重试
+    private boolean retryable;
     // 服务类名，客户端只知道接口名，在服务端中用接口名指向实现类
     private String interfaceName;
     // 方法名

@@ -1,18 +1,25 @@
 package com.ganghuan.myRPCVersion6.loadbalance;
 
-import java.util.List;
+import com.ganghuan.myRPCVersion6.common.RPCRequest;
+
+import java.net.InetSocketAddress;
 import java.util.Random;
+import java.util.List;
 
 /**
  * 随机负载均衡
  */
 public class RandomLoadBalance implements  LoadBalance{
-    @Override
-    public String balance(List<String> addressList) {
+    private final Random random = new Random();
 
-        Random random = new Random();
+    @Override
+    public InetSocketAddress select(List<InetSocketAddress> addressList, RPCRequest request) {
         int choose = random.nextInt(addressList.size());
-        System.out.println("负载均衡选择了" + choose + "服务器");
         return addressList.get(choose);
+    }
+
+    @Override
+    public String name() {
+        return "random";
     }
 }

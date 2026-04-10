@@ -3,6 +3,7 @@ package com.ganghuan.myRPCVersion6.client;
 
 import com.ganghuan.myRPCVersion6.common.RPCRequest;
 import com.ganghuan.myRPCVersion6.common.RPCResponse;
+import com.ganghuan.myRPCVersion6.common.Retryable;
 import lombok.AllArgsConstructor;
 
 import java.lang.reflect.InvocationHandler;
@@ -19,7 +20,10 @@ public class RPCClientProxy implements InvocationHandler {
         // request的构建，使用了lombok中的builder，代码简洁
         RPCRequest request = RPCRequest.builder().interfaceName(method.getDeclaringClass().getName())
                 .methodName(method.getName())
-                .params(args).paramsTypes(method.getParameterTypes()).build();
+                .params(args)
+                .paramsTypes(method.getParameterTypes())
+                .retryable(method.isAnnotationPresent(Retryable.class))
+                .build();
         //数据传输
         RPCResponse response = client.sendRequest(request);
         //System.out.println(response);
