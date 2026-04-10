@@ -17,12 +17,16 @@ public class MyEncode extends MessageToByteEncoder {
 
     @Override
     protected void encode(ChannelHandlerContext ctx, Object msg, ByteBuf out) throws Exception {
+        out.writeInt(ProtocolConstants.MAGIC);
+        out.writeByte(ProtocolConstants.VERSION);
         // 写入消息类型
         if(msg instanceof RPCRequest){
             out.writeShort(MessageType.REQUEST.getCode());
         }
         else if(msg instanceof RPCResponse){
             out.writeShort(MessageType.RESPONSE.getCode());
+        } else {
+            throw new IllegalArgumentException("暂不支持编码此消息类型: " + msg.getClass().getName());
         }
         // 写入序列化方式
         out.writeShort(serializer.getType());

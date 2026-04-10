@@ -3,6 +3,7 @@ com/ganghuan/myRPCVersion3/server/ServiceProvider.class
 com/ganghuan/myRPCVersion6/common/Retryable.class
 com/ganghuan/myRPCVersion1/common/RPCRequest$RPCRequestBuilder.class
 com/ganghuan/myRPCVersion6/codec/SerializerSupport.class
+com/ganghuan/myRPCVersion6/codec/ProtocolConstants.class
 com/ganghuan/myRPCVersion6/server/NettyRPCServerHandler.class
 com/ganghuan/myRPCVersion5/service/BlogService.class
 com/ganghuan/myRPCVersion3/server/TestServer.class
