@@ -3,15 +3,13 @@ package com.ganghuan.myRPCVersion6.client;
 import com.ganghuan.myRPCVersion6.common.RPCResponse;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.util.AttributeKey;
 
 public class NettyClientHandler extends SimpleChannelInboundHandler<RPCResponse> {
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, RPCResponse msg) throws Exception {
-        // 接收到response, 给channel设计别名，让sendRequest里读取response
-        AttributeKey<RPCResponse> key = AttributeKey.valueOf("RPCResponse");
-        ctx.channel().attr(key).set(msg);
-        ctx.channel().close();
+        // IO线程收到响应：通过 requestId 找到对应的 future，complete 它
+        // 不关闭 Channel，保持长连接可供后续请求复用
+        PendingRequests.complete(msg);
     }
 
     @Override

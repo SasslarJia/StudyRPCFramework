@@ -1,6 +1,9 @@
 package com.ganghuan.myRPCVersion6.client;
 
 
+import java.util.concurrent.CompletableFuture;
+
+
 import com.ganghuan.myRPCVersion6.common.RPCRequest;
 import com.ganghuan.myRPCVersion6.common.RPCResponse;
 import com.ganghuan.myRPCVersion6.register.ServiceRegister;
@@ -46,5 +49,10 @@ public class SimpleRPCClient implements RPCClient {
             System.out.println();
             return null;
         }
+    }
+
+    @Override
+    public CompletableFuture<RPCResponse> sendRequestAsync(RPCRequest request) {
+        return CompletableFuture.supplyAsync(() -> sendRequest(request));
     }
 }

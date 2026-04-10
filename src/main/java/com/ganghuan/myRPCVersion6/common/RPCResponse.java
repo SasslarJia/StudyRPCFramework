@@ -5,6 +5,7 @@ package com.ganghuan.myRPCVersion6.common;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
 
@@ -16,18 +17,30 @@ import java.io.Serializable;
 @Data
 @Builder
 @AllArgsConstructor
+@NoArgsConstructor
 public class RPCResponse implements Serializable {
-    
+
+    // 对应请求的唯一标识
+    private String requestId;
     private int code;
     private String message;
     // 更新,这里我们需要加入这个，不然用其它序列化方式（除了java Serialize）得不到data的type
     private Class<?> dataType;
     private Object data;
 
-    public static RPCResponse success(Object data) {
-        return RPCResponse.builder().code(200).data(data).dataType(data.getClass()).build();
+    public static RPCResponse success(Object data, String requestId) {
+        return RPCResponse.builder()
+                .requestId(requestId)
+                .code(200)
+                .data(data)
+                .dataType(data.getClass())
+                .build();
     }
-    public static RPCResponse fail() {
-        return RPCResponse.builder().code(500).message("服务器发生错误").build();
+    public static RPCResponse fail(String requestId) {
+        return RPCResponse.builder()
+                .requestId(requestId)
+                .code(500)
+                .message("服务器发生错误")
+                .build();
     }
 }

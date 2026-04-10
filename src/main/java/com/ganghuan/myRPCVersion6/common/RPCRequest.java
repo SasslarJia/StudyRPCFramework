@@ -3,6 +3,7 @@ package com.ganghuan.myRPCVersion6.common;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
 
@@ -15,7 +16,10 @@ import java.io.Serializable;
 @Data
 @Builder
 @AllArgsConstructor
+@NoArgsConstructor
 public class RPCRequest implements Serializable {
+    // 请求唯一标识，用于多路复用时匹配响应
+    private String requestId;
     // 服务类名，客户端只知道接口名，在服务端中用接口名指向实现类
     private String interfaceName;
     // 方法名

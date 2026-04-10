@@ -561,7 +561,8 @@ class MavenClassExplorer:
         
         return "Could not get bytecode"
 
-@mcp.tool(name = "find_class", description = "当前工作空间中没有相关类信息时，从maven依赖中查找类内容。class_path:类的全路径名，jar_path:JAR包路径，首次查询不传，如果之前通过此工具查找到过类信息，使用上次返回的jar路径")
+@
+mcp.tool(name = "find_class", description = "当前工作空间中没有相关类信息时，从maven依赖中查找类内容。class_path:类的全路径名，jar_path:JAR包路径，首次查询不传，如果之前通过此工具查找到过类信息，使用上次返回的jar路径")
 async def find_class(class_path: str, jar_path: str) -> dict:
     """
     Find a class in a specific JAR file.

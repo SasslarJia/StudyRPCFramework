@@ -8,6 +8,14 @@ import lombok.AllArgsConstructor;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import io.netty.channel.SimpleChannelInboundHandler;
+import lombok.AllArgsConstructor;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 /**
  * 因为是服务器端，我们知道接受到请求格式是RPCRequest
@@ -17,13 +25,19 @@ import java.lang.reflect.Method;
 public class NettyRPCServerHandler extends SimpleChannelInboundHandler<RPCRequest> {
     private ServiceProvider serviceProvider;
 
+    // 自定义业务线程池，隔离 Netty 的 IO 线程与业务逻辑
+    private static final ThreadPoolExecutor bizThreadPool = new ThreadPoolExecutor(
+            16, 32, 60L, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(1000)
+    );
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, RPCRequest msg) throws Exception {
-        //System.out.println(msg);
-        RPCResponse response = getResponse(msg);
-        ctx.writeAndFlush(response);
-        ctx.close();
+        // 提交到业务线程池处理，不阻塞 Netty 的 IO 线程 (NioEventLoop)
+        bizThreadPool.submit(() -> {
+            RPCResponse response = getResponse(msg);
+            ctx.writeAndFlush(response);
+        });
     }
 
     @Override
@@ -42,11 +56,11 @@ public class NettyRPCServerHandler extends SimpleChannelInboundHandler<RPCReques
         try {
             method = service.getClass().getMethod(request.getMethodName(), request.getParamsTypes());
             Object invoke = method.invoke(service, request.getParams());
-            return RPCResponse.success(invoke);
+            return RPCResponse.success(invoke, request.getRequestId());
         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
             e.printStackTrace();
             System.out.println("方法执行错误");
-            return RPCResponse.fail();
+            return RPCResponse.fail(request.getRequestId());
         }
     }
 }

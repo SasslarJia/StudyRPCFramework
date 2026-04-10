@@ -5,19 +5,27 @@ import com.ganghuan.myRPCVersion6.loadbalance.RandomLoadBalance;
 import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
+import org.apache.curator.framework.recipes.cache.PathChildrenCache;
 import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.zookeeper.CreateMode;
 
 import java.net.InetSocketAddress;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ZkServiceRegister implements ServiceRegister {
     // curator 提供的zookeeper客户端
-    private CuratorFramework client;
+    private final CuratorFramework client;
     // zookeeper根路径节点
     private static final String ROOT_PATH = "MyRPC";
     // 初始化负载均衡器， 这里用的是随机， 一般通过构造函数传入
-    private LoadBalance loadBalance = new RandomLoadBalance();
+    private final LoadBalance loadBalance = new RandomLoadBalance();
+    // 客户端本地缓存
+    private final ServiceCache serviceCache = new ServiceCache();
+    // 每个服务仅注册一次监听器
+    private final Map<String, PathChildrenCache> watchMap = new ConcurrentHashMap<>();
 
     // 这里负责zookeeper客户端的初始化，并与zookeeper服务端建立连接
     public ZkServiceRegister(){
@@ -51,15 +59,77 @@ public class ZkServiceRegister implements ServiceRegister {
     // 根据服务名返回地址,服务发现
     @Override
     public InetSocketAddress serviceDiscovery(String serviceName) {
-        try {
-            List<String> strings = client.getChildren().forPath("/" + serviceName);
-            // 负载均衡选择器，选择一个
-            String string = loadBalance.balance(strings);
-            return parseAddress(string);
-        } catch (Exception e) {
-            e.printStackTrace();
+        List<String> addressList = serviceCache.getServiceAddresses(serviceName);
+        if (addressList.isEmpty()) {
+            addressList = refreshServiceAddresses(serviceName, false);
+            if (!addressList.isEmpty()) {
+                registerWatcher(serviceName);
+            }
+        } else if (!watchMap.containsKey(serviceName)) {
+            registerWatcher(serviceName);
         }
-        return null;
+        if (addressList.isEmpty()) {
+            throw new RuntimeException("服务发现失败，未找到可用服务: " + serviceName);
+        }
+        String address = loadBalance.balance(addressList);
+        return parseAddress(address);
+    }
+
+    /**
+     * @param preserveCacheOnFailure true 时表示如果注册中心暂时不可用，则保留旧缓存继续服务
+     */
+    private List<String> refreshServiceAddresses(String serviceName, boolean preserveCacheOnFailure) {
+        List<String> cachedAddresses = serviceCache.getServiceAddresses(serviceName);
+        try {
+            String servicePath = "/" + serviceName;
+            if (client.checkExists().forPath(servicePath) == null) {
+                serviceCache.removeServiceAddresses(serviceName);
+                return Collections.emptyList();
+            }
+            List<String> addressList = client.getChildren().forPath(servicePath);
+            serviceCache.updateServiceAddresses(serviceName, addressList);
+            return addressList;
+        } catch (Exception e) {
+            if (preserveCacheOnFailure && !cachedAddresses.isEmpty()) {
+                System.out.println("刷新服务缓存失败，继续使用旧缓存: " + serviceName + "，原因: " + e.getMessage());
+                return cachedAddresses;
+            }
+            throw new RuntimeException("刷新服务缓存失败: " + serviceName, e);
+        }
+    }
+
+    private void registerWatcher(String serviceName) {
+        watchMap.computeIfAbsent(serviceName, this::createWatcher);
+    }
+
+    private PathChildrenCache createWatcher(String serviceName) {
+        String servicePath = "/" + serviceName;
+        PathChildrenCache watcher = new PathChildrenCache(client, servicePath, true);
+        watcher.getListenable().addListener((curatorClient, event) -> {
+            try {
+                switch (event.getType()) {
+                    case CHILD_ADDED:
+                    case CHILD_REMOVED:
+                    case CHILD_UPDATED:
+                    case CONNECTION_RECONNECTED:
+                    case INITIALIZED:
+                        refreshServiceAddresses(serviceName, true);
+                        break;
+                    default:
+                        break;
+                }
+            } catch (Exception e) {
+                // 监听线程只负责更新缓存，不应把异常扩散到业务调用路径
+                System.out.println("监听服务节点刷新失败: " + serviceName + "，原因: " + e.getMessage());
+            }
+        });
+        try {
+            watcher.start(PathChildrenCache.StartMode.BUILD_INITIAL_CACHE);
+            refreshServiceAddresses(serviceName, true);
+            return watcher;
+        } catch (Exception e) {
+            throw new RuntimeException("注册服务监听失败: " + serviceName, e);
+        }
     }
 
     // 地址 -> XXX.XXX.XXX.XXX:port 字符串
