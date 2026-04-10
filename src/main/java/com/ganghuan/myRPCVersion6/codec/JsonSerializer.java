@@ -61,4 +61,9 @@ public class JsonSerializer implements Serializer {
     public int getType() {
         return 1;
     }
+
+    @Override
+    public String getName() {
+        return "json";
+    }
 }

@@ -8,10 +8,17 @@ public interface Serializer {
     // 其它方式需指定消息格式，再根据message转化成相应的对象
     Object deserialize(byte[] bytes, int messageType);
     // 返回使用的序列器，是哪个
-    // 0：java自带序列化方式, 1: json序列化方式
+    // 0：java自带序列化方式, 1: json序列化方式, 2: protobuf, 3: hessian
     int getType();
+
+    String getName();
+
     // 根据序号取出序列化器，暂时有两种实现方式，需要其它方式，实现这个接口即可
     static Serializer getSerializerByCode(int code){
         return SerializerFactory.getSerializer(code);
+    }
+
+    static Serializer getSerializerByName(String name) {
+        return SerializerFactory.getSerializer(name);
     }
 }
