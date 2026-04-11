@@ -53,6 +53,18 @@ public class ZkServiceRegister implements ServiceRegister {
             System.out.println("此服务已存在");
         }
     }
+
+    @Override
+    public void deregister(String serviceName, InetSocketAddress serverAddress) {
+        try {
+            String path = "/" + serviceName + "/" + getServiceAddress(serverAddress);
+            if (client.checkExists().forPath(path) != null) {
+                client.delete().forPath(path);
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("注销服务失败: " + serviceName, e);
+        }
+    }
     // 根据服务名返回地址,服务发现
     @Override
     public InetSocketAddress serviceDiscovery(String serviceName) {

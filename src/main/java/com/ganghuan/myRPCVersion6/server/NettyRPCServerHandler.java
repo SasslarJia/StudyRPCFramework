@@ -8,14 +8,7 @@ import lombok.AllArgsConstructor;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import io.netty.channel.SimpleChannelInboundHandler;
-import lombok.AllArgsConstructor;
-
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * 因为是服务器端，我们知道接受到请求格式是RPCRequest
@@ -23,21 +16,21 @@ import java.lang.reflect.Method;
  */
 @AllArgsConstructor
 public class NettyRPCServerHandler extends SimpleChannelInboundHandler<RPCRequest> {
-    private ServiceProvider serviceProvider;
+    private static final DynamicThreadPoolManager THREAD_POOL_MANAGER = DynamicThreadPoolManager.getInstance();
 
-    // 自定义业务线程池，隔离 Netty 的 IO 线程与业务逻辑
-    private static final ThreadPoolExecutor bizThreadPool = new ThreadPoolExecutor(
-            16, 32, 60L, TimeUnit.SECONDS,
-            new ArrayBlockingQueue<>(1000)
-    );
+    private ServiceProvider serviceProvider;
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, RPCRequest msg) throws Exception {
         // 提交到业务线程池处理，不阻塞 Netty 的 IO 线程 (NioEventLoop)
-        bizThreadPool.submit(() -> {
-            RPCResponse response = getResponse(msg);
-            ctx.writeAndFlush(response);
-        });
+        try {
+            THREAD_POOL_MANAGER.execute(() -> {
+                RPCResponse response = getResponse(msg);
+                ctx.writeAndFlush(response);
+            });
+        } catch (RejectedExecutionException e) {
+            ctx.writeAndFlush(RPCResponse.fail(msg.getRequestId()));
+        }
     }
 
     @Override

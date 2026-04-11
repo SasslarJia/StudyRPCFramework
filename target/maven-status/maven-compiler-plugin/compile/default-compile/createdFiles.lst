@@ -44,6 +44,7 @@ com/ganghuan/myRPCVersion3/client/SimpleRPCClient.class
 com/ganghuan/myRPCVersion4/service/UserServiceImpl.class
 com/ganghuan/myRPCVersion0/server/UserServiceImpl.class
 com/ganghuan/myRPCVersion1/common/User.class
+com/ganghuan/myRPCVersion6/server/DynamicThreadPoolManager$PoolConfig.class
 com/ganghuan/myRPCVersion5/server/NettyServerInitializer.class
 com/ganghuan/myRPCVersion4/client/NettyClientHandler.class
 com/ganghuan/myRPCVersion6/server/WorkThread.class
@@ -98,9 +99,11 @@ com/ganghuan/myRPCVersion2/server/ServiceProvider.class
 com/ganghuan/myRPCVersion2/common/RPCRequest.class
 com/ganghuan/myRPCVersion5/service/UserServiceImpl.class
 com/ganghuan/myRPCVersion5/service/UserService.class
+com/ganghuan/myRPCVersion6/server/ServerHealthChecker.class
 com/ganghuan/myRPCVersion2/common/User$UserBuilder.class
 com/ganghuan/myRPCVersion1/server/UserServiceImpl.class
 com/ganghuan/myRPCVersion6/common/RPCResponse.class
+com/ganghuan/myRPCVersion6/server/DynamicThreadPoolManager.class
 com/ganghuan/myRPCVersion5/codec/JsonSerializer.class
 com/ganghuan/myRPCVersion6/register/ServiceCache.class
 com/ganghuan/myRPCVersion6/common/RPCResponse$RPCResponseBuilder.class
@@ -181,6 +184,7 @@ com/ganghuan/myRPCVersion5/codec/MyDecode.class
 com/ganghuan/myRPCVersion5/server/SimpleRPCRPCServer.class
 com/ganghuan/myRPCVersion5/client/SimpleRPCClient.class
 com/ganghuan/myRPCVersion6/codec/JsonSerializer.class
+com/ganghuan/myRPCVersion6/server/DynamicThreadPoolManager$PoolSnapshot.class
 com/ganghuan/myRPCVersion4/server/TestServer.class
 com/ganghuan/myRPCVersion5/server/ServiceProvider.class
 com/ganghuan/myRPCVersion4/service/BlogService.class

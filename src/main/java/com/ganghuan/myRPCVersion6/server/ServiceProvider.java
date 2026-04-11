@@ -6,8 +6,11 @@ import com.ganghuan.myRPCVersion6.register.ServiceRegister;
 import com.ganghuan.myRPCVersion6.register.ZkServiceRegister;
 
 import java.net.InetSocketAddress;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 存放服务接口名与服务端对应的实现类
@@ -20,11 +23,13 @@ public class ServiceProvider {
     /**
      * 一个实现类可能实现多个服务接口，
      */
-    private Map<String, Object> interfaceProvider;
+    private final Map<String, Object> interfaceProvider;
 
-    private ServiceRegister serviceRegister;
-    private String host;
-    private int port;
+    private final ServiceRegister serviceRegister;
+    private final String host;
+    private final int port;
+    private final Set<String> registeredServices = ConcurrentHashMap.newKeySet();
+    private volatile boolean available = true;
 
     public ServiceProvider(String host, int port){
         // 需要传入服务端自身的服务的网络地址
@@ -41,12 +46,45 @@ public class ServiceProvider {
             // 本机的映射表
             interfaceProvider.put(clazz.getName(),service);
             // 在注册中心注册服务
-            serviceRegister.register(clazz.getName(),new InetSocketAddress(host,port));
+            registeredServices.add(clazz.getName());
+            if (available) {
+                serviceRegister.register(clazz.getName(), new InetSocketAddress(host, port));
+            }
         }
 
     }
 
     public Object getService(String interfaceName){
         return interfaceProvider.get(interfaceName);
+    }
+
+    public synchronized void markUnavailable() {
+        if (!available) {
+            return;
+        }
+        InetSocketAddress address = new InetSocketAddress(host, port);
+        for (String serviceName : registeredServices) {
+            serviceRegister.deregister(serviceName, address);
+        }
+        available = false;
+    }
+
+    public synchronized void markAvailable() {
+        if (available) {
+            return;
+        }
+        InetSocketAddress address = new InetSocketAddress(host, port);
+        for (String serviceName : registeredServices) {
+            serviceRegister.register(serviceName, address);
+        }
+        available = true;
+    }
+
+    public boolean isAvailable() {
+        return available;
+    }
+
+    public Set<String> getRegisteredServices() {
+        return Collections.unmodifiableSet(registeredServices);
     }
 }
