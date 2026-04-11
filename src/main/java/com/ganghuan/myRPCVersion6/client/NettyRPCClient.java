@@ -15,12 +15,12 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.concurrent.CompletionException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.UUID;
 
@@ -97,10 +97,30 @@ public class NettyRPCClient implements RPCClient {
 
     @Override
     public CompletableFuture<RPCResponse> sendRequestAsync(RPCRequest request) {
-        return CompletableFuture.supplyAsync(() -> sendRequest(copyRequest(request)));
+        List<InetSocketAddress> addressList = serviceRegister.getServiceAddresses(request.getInterfaceName());
+        if (addressList.isEmpty()) {
+            return CompletableFuture.failedFuture(new RuntimeException("没有可用服务实例: " + request.getInterfaceName()));
+        }
+        int maxAttempts = request.isRetryable() ? Math.min(addressList.size(), MAX_RETRY_TIMES + 1) : 1;
+        return sendRequestAsyncInternal(copyRequest(request), addressList, new HashSet<>(), maxAttempts);
     }
 
     private RPCResponse invokeOnce(RPCRequest request, InetSocketAddress address, String key) {
+        try {
+            return invokeOnceAsync(request, address, key).join();
+        } catch (CompletionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RetryableRpcException) {
+                throw (RetryableRpcException) cause;
+            }
+            if (cause instanceof NonRetryableRpcException) {
+                throw (NonRetryableRpcException) cause;
+            }
+            throw new RetryableRpcException("RPC调用失败: " + request.getRequestId(), cause);
+        }
+    }
+
+    private CompletableFuture<RPCResponse> invokeOnceAsync(RPCRequest request, InetSocketAddress address, String key) {
         Channel channel = getOrCreateChannel(address, key);
         String requestId = UUID.randomUUID().toString();
         request.setRequestId(requestId);
@@ -108,35 +128,30 @@ public class NettyRPCClient implements RPCClient {
         PendingRequests.put(requestId, future);
 
         ChannelFuture writeFuture = channel.writeAndFlush(request);
-        writeFuture.awaitUninterruptibly();
-        if (!writeFuture.isSuccess()) {
-            PendingRequests.remove(requestId);
-            removeChannel(key, channel);
-            throw new RetryableRpcException("发送请求失败: " + key, writeFuture.cause());
-        }
+        writeFuture.addListener(result -> {
+            if (!result.isSuccess()) {
+                PendingRequests.remove(requestId);
+                removeChannel(key, channel);
+                future.completeExceptionally(new RetryableRpcException("发送请求失败: " + key, result.cause()));
+            }
+        });
 
-        try {
-            RPCResponse response = future.get(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        channel.eventLoop().schedule(() -> {
+            if (PendingRequests.remove(requestId) != null) {
+                removeChannel(key, channel);
+                future.completeExceptionally(new RetryableRpcException(
+                        "RPC调用超时: " + requestId,
+                        new TimeoutException("等待响应超时")
+                ));
+            }
+        }, REQUEST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+
+        return future.thenApply(response -> {
             if (response.getCode() != 200) {
                 throw new NonRetryableRpcException("服务端返回失败: " + response.getMessage());
             }
             return response;
-        } catch (TimeoutException e) {
-            PendingRequests.remove(requestId);
-            removeChannel(key, channel);
-            throw new RetryableRpcException("RPC调用超时: " + requestId, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            PendingRequests.remove(requestId);
-            throw new NonRetryableRpcException("RPC调用被中断: " + requestId, e);
-        } catch (NonRetryableRpcException e) {
-            PendingRequests.remove(requestId);
-            throw e;
-        } catch (Exception e) {
-            PendingRequests.remove(requestId);
-            removeChannel(key, channel);
-            throw new RetryableRpcException("RPC调用失败: " + requestId, e);
-        }
+        });
     }
 
     private Channel getOrCreateChannel(InetSocketAddress address, String key) {
@@ -200,6 +215,53 @@ public class NettyRPCClient implements RPCClient {
                 .params(request.getParams())
                 .paramsTypes(request.getParamsTypes())
                 .build();
+    }
+
+    private CompletableFuture<RPCResponse> sendRequestAsyncInternal(RPCRequest request,
+                                                                    List<InetSocketAddress> addressList,
+                                                                    Set<String> triedInstances,
+                                                                    int remainingAttempts) {
+        InetSocketAddress address = selectAddress(addressList, request, triedInstances);
+        if (address == null) {
+            return CompletableFuture.failedFuture(new RuntimeException("没有可用于重试的服务实例: " + request.getInterfaceName()));
+        }
+        String key = buildAddressKey(address);
+        triedInstances.add(key);
+
+        return invokeOnceAsync(request, address, key)
+                .whenComplete((response, throwable) -> {
+                    if (throwable == null) {
+                        onInstanceSuccess(key);
+                    } else {
+                        onInstanceFailure(key);
+                    }
+                })
+                .handle((response, throwable) -> {
+                    if (throwable == null) {
+                        return CompletableFuture.completedFuture(response);
+                    }
+                    Throwable cause = unwrapCompletionThrowable(throwable);
+                    if (!(cause instanceof RetryableRpcException) || !request.isRetryable() || remainingAttempts <= 1) {
+                        return CompletableFuture.<RPCResponse>failedFuture(asRuntimeException(cause));
+                    }
+                    System.out.println("实例调用失败，准备异步重试其它实例: " + key + "，原因: " + cause.getMessage());
+                    return sendRequestAsyncInternal(copyRequest(request), addressList, triedInstances, remainingAttempts - 1);
+                })
+                .thenCompose(future -> future);
+    }
+
+    private Throwable unwrapCompletionThrowable(Throwable throwable) {
+        if (throwable instanceof CompletionException && throwable.getCause() != null) {
+            return throwable.getCause();
+        }
+        return throwable;
+    }
+
+    private RuntimeException asRuntimeException(Throwable throwable) {
+        if (throwable instanceof RuntimeException) {
+            return (RuntimeException) throwable;
+        }
+        return new RuntimeException(throwable);
     }
 
     private enum CircuitState {

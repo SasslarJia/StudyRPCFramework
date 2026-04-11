@@ -27,7 +27,7 @@ public class PendingRequests {
     }
 
     /** 超时或取消时主动清理，防止内存泄漏 */
-    public static void remove(String requestId) {
-        map.remove(requestId);
+    public static CompletableFuture<RPCResponse> remove(String requestId) {
+        return map.remove(requestId);
     }
 }
